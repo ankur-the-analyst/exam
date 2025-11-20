@@ -144,6 +144,7 @@
             APP_CONTAINER.innerHTML = '';
 
             if (viewName === 'signin') renderSignIn();
+            else if (viewName === 'proctoringRules') renderProctoringRules(); // New View
             else if (viewName === 'quiz') renderQuiz();
             else if (viewName === 'admin') renderAdminLogin();
             else if (viewName === 'leaderboard') renderLeaderboard(); 
@@ -495,16 +496,6 @@
                         <p class="text-sm font-semibold text-gray-700">Loading quiz data...</p>
                     </div>
                     
-                    <div class="mobile-warning">
-                        <p class="font-bold text-red-800"><i class="fas fa-ban mr-2"></i>PROCTORING RULES:</p>
-                        <ul class="list-disc ml-5 mt-2 space-y-2 text-sm text-red-900 font-medium">
-                            <li>Do NOT touch ANY edge of the screen (no side/top/bottom swipes).</li>
-                            <li>Do NOT switch apps, minimize the browser, or lose focus.</li>
-                            <li>Do NOT attempt to Copy, Paste, or Screenshot the quiz content.</li>
-                        </ul>
-                        <p class="mt-4 p-2 bg-red-100 border border-red-200 rounded text-xs text-center font-bold text-red-700">All forms of interference are logged and will lead to immediate termination of exam after ${MAX_VIOLATIONS} warnings.</p>
-                    </div>
-
                     <form id="signInForm" class="space-y-4 mt-6">
                         <div><label class="block text-sm font-medium text-gray-700">Name</label><input type="text" id="studentName" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
                         <div><label class="block text-sm font-medium text-gray-700">Email</label><input type="email" id="collegeEmail" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
@@ -543,16 +534,63 @@
                     admissionNo: document.getElementById('admissionNo').value.trim()
                 };
 
-                // Shuffle questions after fetching, before starting
-                shuffleArray(quizQuestions); 
-
-                requestFullScreen();
-                enableProctoring();
-                setView('quiz');
+                // Move to Proctoring Rules view after successful sign-in
+                setView('proctoringRules');
             });
             
             document.getElementById('adminSignInButton').onclick = () => setView('admin');
         }
+
+        // --- NEW: RENDER PROCTORING RULES PAGE ---
+        function renderProctoringRules() {
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-lg bg-white rounded-xl shadow-2xl p-8">
+                    <h2 class="text-3xl font-extrabold text-center text-red-700 mb-6">⚠️ Proctoring Rules & Agreement</h2>
+                    <p class="text-center text-gray-600 mb-6">You must agree to these rules before starting the proctored exam.</p>
+                    
+                    <div class="p-5 bg-red-50 border border-red-200 rounded-lg">
+                        <p class="font-bold text-red-800 text-lg mb-3"><i class="fas fa-ban mr-2"></i>STRICT PROCTORING RULES:</p>
+                        <ul class="list-disc ml-6 mt-2 space-y-3 text-sm text-red-900 font-medium">
+                            <li>**Full Screen Mode:** The quiz must remain in full-screen mode at all times.</li>
+                            <li>**Screen Edges:** Do NOT touch ANY edge of the screen (no side/top/bottom swipes, which trigger browser navigation or notifications).</li>
+                            <li>**Focus Loss:** Do NOT switch apps, minimize the browser, or lose focus of the quiz window.</li>
+                            <li>**Copy/Paste:** Do NOT attempt to Copy, Cut, Paste, or Screenshot the quiz content.</li>
+                            <li>**External Tools:** The use of unauthorized browser extensions is strictly prohibited.</li>
+                        </ul>
+                        <p class="mt-4 p-2 bg-red-100 border border-red-200 rounded text-xs text-center font-bold text-red-700">All forms of interference are logged and will lead to immediate termination of the exam after ${MAX_VIOLATIONS} warnings.</p>
+                    </div>
+
+                    <div class="flex items-center mt-6">
+                        <input type="checkbox" id="rulesCheckbox" class="h-5 w-5 text-green-600 border-gray-300 rounded focus:ring-green-500">
+                        <label for="rulesCheckbox" class="ml-3 text-sm font-medium text-gray-700">I have read and agree to all the rules above.</label>
+                    </div>
+
+                    <button id="agreeAndStartBtn" class="w-full py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition mt-6 shadow-lg font-bold" disabled>
+                        Agree & Start Quiz
+                    </button>
+                    <button id="cancelBtn" class="w-full py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition font-bold mt-2">
+                        Cancel & Return to Sign-In
+                    </button>
+                </div>
+            `;
+            
+            const checkbox = document.getElementById('rulesCheckbox');
+            const startBtn = document.getElementById('agreeAndStartBtn');
+            const cancelBtn = document.getElementById('cancelBtn');
+
+            checkbox.onchange = () => { startBtn.disabled = !checkbox.checked; };
+            cancelBtn.onclick = () => setView('signin');
+
+            startBtn.onclick = () => {
+                // Shuffle questions, request fullscreen, enable proctoring, and start quiz
+                shuffleArray(quizQuestions); 
+                requestFullScreen();
+                enableProctoring();
+                setView('quiz');
+            };
+        }
+        // --- END: NEW RENDER PROCTORING RULES PAGE ---
 
         function renderQuiz() {
             APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
