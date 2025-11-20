@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proctored Business & Finance Quiz</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        /* General Setup */
+        #app { min-height: 100vh; }
+        
+        /* Quiz Timer Styles */
+        #progressBarContainer { position: relative; height: 8px; background-color: #e5e7eb; border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
+        #progressBar { height: 100%; width: 100%; background-color: #ef4444; transition: width 1s linear; }
+        #countdownTimer { font-size: 1.25rem; font-weight: 700; color: #ef4444; text-align: right; margin-bottom: 10px; }
+        
+        /* Loading Overlay */
+        #loadingOverlay {
+            position: fixed; inset: 0; background: rgba(255,255,255,0.95); 
+            z-index: 50; display: none; flex-direction: column; justify-content: center; align-items: center;
+        }
+        
+        /* Violation Modal */
+        #violationModal, #quizOffModal {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.5); 
+            z-index: 55; display: none; justify-content: center; align-items: center;
+        }
+        .modal-content {
+            background: white; padding: 2.5rem; border-radius: 1rem; max-width: 90%; width: 400px; text-align: center;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+
+        /* Spinner */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px; height: 36px; border-radius: 50%; border-left-color: #f59e0b;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="app">
+        </div>
+
+    <div id="loadingOverlay">
+        <div class="spinner mb-4"></div>
+        <p class="text-gray-700 font-semibold">Processing...</p>
+    </div>
+
+    <div id="violationModal">
+        <div class="modal-content">
+            <i class="fas fa-exclamation-triangle text-yellow-500 text-4xl mb-4"></i>
+            <div id="violationMessage" class="mb-6"></div>
+            <button id="modalConfirmBtn"></button>
+        </div>
+    </div>
+
+    <div id="quizOffModal">
+        <div class="modal-content">
+            <i class="fas fa-exclamation-circle text-red-500 text-4xl mb-4"></i>
+            <p class="text-xl font-bold text-gray-900 mb-3">Quiz Not Started</p>
+            <div id="quizOffMessage" class="mb-6 text-gray-700"></div>
+            <button id="quizOffConfirmBtn" class="w-full py-3 px-4 rounded-lg text-white font-bold bg-gray-500 hover:bg-gray-600 transition shadow-md">Close</button>
+        </div>
+    </div>
+
+    <script>
+        // --- SUPABASE CONFIGURATION ---
+        // ⚠️ These keys were provided in the prompt's context and are required for the client to fetch data.
+        const SUPABASE_URL = 'https://tdxausibwaagbhnbgkgz.supabase.co'; 
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRkeGF1c2lid2FhZ2JobmJna2d6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMwNDgyMDYsImV4cCI6MjA3ODYyNDIwNn0.ApeJFTg-pQaV2gigOUTGpKnMY_AFnT1v5DPpYCCmOKY';
+        
+        const SUPABASE_SUBMISSIONS_TABLE = 'quiz_submissions'; 
+        const SUPABASE_QUESTIONS_TABLE = 'quiz_questions'; // Your new table
+        const STATIC_QUIZ_UUID = '5f4b3d2c-1a0e-9f8d-7c6b-5a4e3d2c1b0a';
+
+        // Initialize Supabase client
+        const { createClient } = supabase;
+        const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // --- QUIZ DATA - NO HARDCODED QUESTIONS ---
+        let quizQuestions = []; 
+
+        // --- STATE ---
+        let studentInfo = {};
+        let currentQuestionIndex = 0;
+        let studentResponses = []; // Will be sized after fetching questions
+        let timerInterval;
+        const TIME_PER_QUESTION = 10; 
+        let timeLeft = TIME_PER_QUESTION;
+        // Allows Admin to globally toggle the quiz state
+        let isQuizActive = localStorage.getItem('isQuizActive') === 'false' ? false : true; 
+        
+        let proctoringViolations = { total: 0, windowSwitch: 0, copyPaste: 0 };
+        const MAX_VIOLATIONS = 3;
+        
+        const WINDOW_SWITCH_COOLDOWN = 500; 
+        const EXTENSION_CHECK_INTERVAL = 500; 
+        
+        let violationCooldown = false; 
+        let extensionCheckInterval; 
+        
+        // Universal Edge Thresholds for swipe detection
+        const EDGE_THRESHOLD = 50; 
+        const TOP_EDGE_THRESHOLD = 50; 
+
+        // DOM Elements
+        const APP_CONTAINER = document.getElementById('app');
+        const VIOLATION_MODAL = document.getElementById('violationModal');
+        const MODAL_CONFIRM_BTN = document.getElementById('modalConfirmBtn');
+        const VIOLATION_MESSAGE = document.getElementById('violationMessage');
+        const QUIZ_OFF_MODAL = document.getElementById('quizOffModal');
+        const QUIZ_OFF_CONFIRM_BTN = document.getElementById('quizOffConfirmBtn');
+        const LOADING_OVERLAY = document.getElementById('loadingOverlay');
+
+        // --- UTILITIES ---
+
+        function generateUUID() {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+        }
+
+        function setView(viewName) {
+            VIOLATION_MODAL.style.display = 'none';
+            QUIZ_OFF_MODAL.style.display = 'none'; 
+            LOADING_OVERLAY.style.display = 'none';
+
+            APP_CONTAINER.innerHTML = '';
+
+            if (viewName === 'signin') renderSignIn();
+            else if (viewName === 'quiz') renderQuiz();
+            else if (viewName === 'admin') renderAdminLogin();
+            else if (viewName === 'leaderboard') renderLeaderboard(); 
+        }
+
+        function showQuizOffModal() {
+            const msg = document.getElementById('quizOffMessage');
+            if (msg) {
+                msg.innerHTML = "The administrator has <strong class='text-red-500'>NOT started</strong> the quiz yet.<br><br>Please wait for further instructions.";
+            }
+            QUIZ_OFF_MODAL.style.display = 'flex';
+        }
+
+        function showTempMessage(msg, isError = false) {
+            let tempDiv = document.getElementById('tempMessage');
+            if (!tempDiv) {
+                tempDiv = document.createElement('div');
+                tempDiv.id = 'tempMessage';
+                tempDiv.className = `fixed top-20 left-1/2 transform -translate-x-1/2 text-white px-6 py-3 rounded-lg shadow-xl z-[60] transition-opacity duration-300 font-medium`;
+                document.body.appendChild(tempDiv);
+            }
+            tempDiv.className = `fixed top-20 left-1/2 transform -translate-x-1/2 text-white px-6 py-3 rounded-lg shadow-xl z-[60] transition-opacity duration-300 font-medium ${isError ? 'bg-red-600' : 'bg-green-600'}`;
+            tempDiv.textContent = msg;
+            tempDiv.style.opacity = '1';
+            setTimeout(() => { tempDiv.style.opacity = '0'; }, 4000);
+        }
+
+        function saveResultLocally(name, email, admissionNo, score, totalQuestions, violations) {
+            const leaderboard = JSON.parse(localStorage.getItem('quizLeaderboard') || '[]');
+            const percentageVal = ((score / totalQuestions) * 100).toFixed(2);
+            const result = {
+                name, email, admissionNo, score, total: totalQuestions,
+                percentage: percentageVal,
+                violations: violations.total, 
+                windowSwitchViolations: violations.windowSwitch, 
+                copyPasteViolations: violations.copyPaste,
+                timestamp: new Date().toLocaleString()
+            };
+            leaderboard.push(result);
+            leaderboard.sort((a, b) => b.score - a.score || new Date(a.timestamp) - new Date(b.timestamp));
+            localStorage.setItem('quizLeaderboard', JSON.stringify(leaderboard));
+            return result; 
+        }
+
+        // --- DATABASE UPLOAD LOGIC ---
+        async function uploadResultToSupabase(resultData) {
+            const submissionUUID = generateUUID(); 
+            const dataToInsert = {
+                student_id: submissionUUID,
+                quiz_id: STATIC_QUIZ_UUID,
+                score: resultData.score,
+                total_questions: resultData.total,
+                percentage: resultData.percentage.toString(), 
+                total_violations: resultData.violations,
+                window_switch_violations: resultData.windowSwitchViolations, 
+                copy_paste_violations: resultData.copyPasteViolations,
+                submission_time: new Date().toISOString(),
+                student_name: resultData.name,
+                college_email: resultData.email,
+                admission_no: resultData.admissionNo,
+            };
+            try {
+                const { error } = await client.from(SUPABASE_SUBMISSIONS_TABLE).insert([dataToInsert]); 
+                if (error) throw error; 
+                return { success: true };
+            } catch (e) {
+                console.error('Upload Exception:', e);
+                if(e.message && e.message.includes("row-level security")) {
+                    return { success: false, message: "DATABASE PERMISSION ERROR: Check RLS policies on 'quiz_submissions' table." };
+                }
+                return { success: false, message: e.message || "Unknown error during submission upload" };
+            }
+        }
+
+        // --- QUESTION FETCH LOGIC (Dynamically loads Q&A) ---
+        async function fetchQuizQuestionsFromSupabase() {
+            LOADING_OVERLAY.style.display = 'flex';
+            try {
+                // Fetch all required columns from your new table
+                const { data, error } = await client
+                    .from(SUPABASE_QUESTIONS_TABLE)
+                    .select('question, answer, option_a, option_b, option_c, option_d');
+                
+                if (error) throw error;
+
+                if (data.length === 0) {
+                    showTempMessage("No quiz questions found in the database. Contact admin.", true);
+                    return false;
+                }
+
+                // Map the flat database data into the required JavaScript structure
+                quizQuestions = data.map(q => ({
+                    question: q.question,
+                    options: [q.option_a, q.option_b, q.option_c, q.option_d],
+                    answer: q.answer
+                }));
+                
+                // Re-initialize studentResponses array size based on fetched questions
+                studentResponses = Array(quizQuestions.length).fill(null);
+
+                return true;
+            } catch (e) {
+                console.error('Fetch Questions Exception:', e);
+                showTempMessage("Failed to load quiz questions: " + e.message, true);
+                return false;
+            } finally {
+                LOADING_OVERLAY.style.display = 'none';
+            }
+        }
+        // --- END: QUESTION FETCH LOGIC ---
+
+
+        // --- PROCTORING LOGIC ---
+        function requestFullScreen() {
+            const element = document.documentElement;
+            if (element.requestFullscreen) {
+                element.requestFullscreen().catch(e => {
+                    console.error("Fullscreen Request Failed on user click:", e);
+                    showTempMessage('Browser blocked automatic Full Screen. Please click the full screen icon manually.', true);
+                });
+            }
+            else if (element.mozRequestFullScreen) element.mozRequestFullScreen();
+            else if (element.webkitRequestFullscreen) element.webkitRequestFullscreen();
+            else if (element.msRequestFullscreen) element.msRequestFullscreen();
+        }
+
+        function exitFullScreen() {
+            if (document.exitFullscreen && document.fullscreenElement) document.exitFullscreen();
+            else if (document.mozCancelFullScreen) document.mozCancelFullScreen();
+            else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+            else if (document.msExitFullscreen) document.msExitFullscreen();
+        }
+        
+        function showViolationModal(isTerminating, reason) {
+            if (isTerminating) {
+                VIOLATION_MESSAGE.innerHTML = `<p class="text-red-700 font-bold mb-2 text-lg">EXAM TERMINATED</p><p>You exceeded the limit of ${MAX_VIOLATIONS} violations. The exam will now be submitted.</p>`;
+                MODAL_CONFIRM_BTN.textContent = 'Submit Exam Now';
+                MODAL_CONFIRM_BTN.className = "w-full py-3 px-4 rounded-lg text-white font-bold bg-red-700 hover:bg-red-800 transition shadow-lg";
+                
+                stopTimer();
+                disableProctoring(); 
+                exitFullScreen();
+                
+                MODAL_CONFIRM_BTN.onclick = () => {
+                    VIOLATION_MODAL.style.display = 'none';
+                    calculateAndShowResults(true); 
+                };
+            } else {
+                clearInterval(extensionCheckInterval); 
+                
+                let detailMsg = "Suspicious activity detected.";
+                if (reason === 'swipedown') detailMsg = "Do not swipe from the **top edge** (Notification Panel).";
+                else if (reason === 'swipeleft' || reason === 'swiperight') detailMsg = "Do not swipe from the **side edges** (Browser Navigation).";
+                else if (reason === 'swipeup') detailMsg = "Do not swipe from the **bottom edge** (Control Center/Home Bar).";
+                else if (reason === 'blur') detailMsg = "Do not switch apps, minimize the browser, or lose focus.";
+                else if (reason === 'copypaste') detailMsg = "Copy/Paste is strictly prohibited.";
+                else if (reason === 'screenshot') detailMsg = "Unauthorized **screenshot attempt** detected."; 
+                else if (reason === 'extension') detailMsg = "Unauthorized **browser extension interference** detected.";
+
+                VIOLATION_MESSAGE.innerHTML = `
+                    <p class="text-lg font-bold text-gray-800 mb-2">⚠️ ${detailMsg}</p>
+                    <p class="text-sm text-gray-600">This incident has been recorded.</p>
+                    <div class="mt-4 p-2 bg-red-50 rounded border border-red-100">
+                        <p class="font-bold text-red-600">Violation ${proctoringViolations.total} of ${MAX_VIOLATIONS}</p>
+                    </div>
+                `;
+                
+                MODAL_CONFIRM_BTN.textContent = 'Resume Quiz (Enable Full Screen)';
+                MODAL_CONFIRM_BTN.className = "w-full py-3 px-4 rounded-lg text-white font-bold bg-yellow-600 hover:bg-yellow-700 transition shadow-md";
+                MODAL_CONFIRM_BTN.onclick = () => {
+                    VIOLATION_MODAL.style.display = 'none';
+                    
+                    extensionCheckInterval = setInterval(detectSpecificExtensionFootprints, EXTENSION_CHECK_INTERVAL); 
+                    
+                    requestFullScreen(); 
+                };
+            }
+            VIOLATION_MODAL.style.display = 'flex';
+        }
+
+        function handleProctoringViolation(type, reason) {
+            if (currentQuestionIndex >= quizQuestions.length) return; 
+            
+            if (proctoringViolations.total >= MAX_VIOLATIONS) return; 
+            
+            if (type === 'windowSwitch') {
+                if (violationCooldown) return; 
+                
+                proctoringViolations.windowSwitch++; 
+                violationCooldown = true;
+                
+                setTimeout(() => { violationCooldown = false; }, WINDOW_SWITCH_COOLDOWN); 
+            } 
+            else if (type === 'copyPaste') {
+                proctoringViolations.copyPaste++;
+            }
+            else return; 
+            
+            proctoringViolations.total++;
+
+            const vDisplay = document.getElementById('violationCountDisplay');
+            if (vDisplay) vDisplay.innerHTML = `⚠️ Violations: ${proctoringViolations.total} / ${MAX_VIOLATIONS}`;
+
+            if (proctoringViolations.total >= MAX_VIOLATIONS) {
+                disableProctoring(); 
+                showViolationModal(true, reason); 
+                
+            }
+            else if (type === 'windowSwitch') {
+                    showViolationModal(false, reason); 
+            }
+        }
+        
+        function detectSpecificExtensionFootprints() {
+            if (currentQuestionIndex >= quizQuestions.length || violationCooldown) return;
+
+            // Check 1: Known injected global properties from common extensions
+            if (window.Stranalytics || window.adblocker || window.betterTranslate || window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
+                handleProctoringViolation('windowSwitch', 'extension'); 
+                return;
+            }
+
+            // Check 2: Check for existence of Chrome/Firefox extension APIs
+            if (window.chrome && window.chrome.runtime) {
+                handleProctoringViolation('windowSwitch', 'extension');
+                return;
+            }
+        }
+        
+        const visibilityChangeHandler = () => { 
+            if (document.hidden) handleProctoringViolation('windowSwitch', 'blur'); 
+        };
+        
+        const blurHandler = () => { 
+            if(violationCooldown) return;
+            handleProctoringViolation('windowSwitch', 'blur'); 
+        };
+
+        const touchStartHandler = (e) => {
+            if (currentQuestionIndex >= quizQuestions.length) return; 
+
+            if(e.touches && e.touches.length > 0) {
+                const touchX = e.touches[0].clientX;
+                const touchY = e.touches[0].clientY;
+                const screenWidth = window.innerWidth;
+                const screenHeight = window.innerHeight;
+                let reason = null;
+
+                if(touchY < TOP_EDGE_THRESHOLD) reason = 'swipedown';
+                else if(touchX < EDGE_THRESHOLD) reason = 'swipeleft';
+                else if(touchX > screenWidth - EDGE_THRESHOLD) reason = 'swiperight';
+                else if(touchY > screenHeight - EDGE_THRESHOLD) reason = 'swipeup';
+                
+                if (reason) {
+                    e.preventDefault(); 
+                    handleProctoringViolation('windowSwitch', reason);
+                }
+            }
+        };
+        
+        const copyCutPasteHandler = (e) => {
+            e.preventDefault();
+            showTempMessage('Content protected.', true); 
+            handleProctoringViolation('copyPaste', 'copypaste');
+        };
+
+        const screenshotKeyHandler = (e) => {
+            if (e.key === 'PrintScreen' || e.keyCode === 44) {
+                e.preventDefault(); 
+                showTempMessage('Screenshot attempt detected.', true); 
+                handleProctoringViolation('copyPaste', 'screenshot');
+            } 
+        };
+
+        function enableProctoring() {
+            document.addEventListener('visibilitychange', visibilityChangeHandler);
+            window.addEventListener('blur', blurHandler); 
+            document.addEventListener('touchstart', touchStartHandler, { passive: false });
+            document.addEventListener('copy', copyCutPasteHandler);
+            document.addEventListener('cut', copyCutPasteHandler);
+            document.addEventListener('paste', copyCutPasteHandler);
+            document.addEventListener('contextmenu', event => event.preventDefault());
+            document.addEventListener('keydown', screenshotKeyHandler); 
+
+            detectSpecificExtensionFootprints(); 
+            extensionCheckInterval = setInterval(detectSpecificExtensionFootprints, EXTENSION_CHECK_INTERVAL); 
+        }
+
+        function disableProctoring() {
+            clearInterval(extensionCheckInterval); 
+            document.removeEventListener('visibilitychange', visibilityChangeHandler);
+            window.removeEventListener('blur', blurHandler);
+            document.removeEventListener('touchstart', touchStartHandler);
+            document.removeEventListener('copy', copyCutPasteHandler);
+            document.removeEventListener('cut', copyCutPasteHandler);
+            document.removeEventListener('paste', copyCutPasteHandler);
+            document.removeEventListener('keydown', screenshotKeyHandler); 
+        }
+
+        // --- TIMER & LOGIC ---
+        function updateTimerDisplay() {
+            const progressBar = document.getElementById('progressBar');
+            const countdownTimer = document.getElementById('countdownValue'); 
+            if (progressBar) progressBar.style.width = ((timeLeft / TIME_PER_QUESTION) * 100) + '%';
+            if (countdownTimer) countdownTimer.textContent = timeLeft;
+        }
+
+        function startTimer() {
+            stopTimer();
+            timeLeft = TIME_PER_QUESTION;
+            updateTimerDisplay();
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                updateTimerDisplay();
+                if (timeLeft <= 0) {
+                    stopTimer();
+                    // Auto-answer null on timeout
+                    studentResponses[currentQuestionIndex] = null; 
+                    moveToNextQuestion();
+                }
+            }, 1000);
+        }
+
+        function stopTimer() { clearInterval(timerInterval); }
+
+        function moveToNextQuestion() {
+            currentQuestionIndex++;
+            if (currentQuestionIndex < quizQuestions.length) {
+                renderQuizQuestion();
+                startTimer();
+            } else {
+                stopTimer();
+                disableProctoring();
+                exitFullScreen();
+                calculateAndShowResults(false);
+            }
+        }
+
+        // --- RENDERING VIEWS ---
+
+        async function renderSignIn() {
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-md bg-white rounded-xl shadow-2xl p-8">
+                    <h2 class="text-3xl font-extrabold text-center text-gray-900 mb-6">Quiz Sign-In</h2>
+                    
+                    <div id="loadingQuestionsIndicator" class="text-center p-4 bg-yellow-50 rounded-lg border border-yellow-200 mb-4">
+                        <div class="spinner mx-auto mb-2"></div>
+                        <p class="text-sm font-semibold text-gray-700">Loading quiz data...</p>
+                    </div>
+                    
+                    <div class="mobile-warning">
+                        <p class="font-bold text-red-800"><i class="fas fa-ban mr-2"></i>PROCTORING RULES:</p>
+                        <ul class="list-disc ml-5 mt-2 space-y-2 text-sm text-red-900 font-medium">
+                            <li>Do NOT touch ANY edge of the screen (no side/top/bottom swipes).</li>
+                            <li>Do NOT switch apps, minimize the browser, or lose focus.</li>
+                            <li>Do NOT attempt to Copy, Paste, or Screenshot the quiz content.</li>
+                        </ul>
+                        <p class="mt-4 p-2 bg-red-100 border border-red-200 rounded text-xs text-center font-bold text-red-700">All forms of interference are logged and will lead to immediate termination of exam after ${MAX_VIOLATIONS} warnings.</p>
+                    </div>
+
+                    <form id="signInForm" class="space-y-4 mt-6">
+                        <div><label class="block text-sm font-medium text-gray-700">Name</label><input type="text" id="studentName" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
+                        <div><label class="block text-sm font-medium text-gray-700">Email</label><input type="email" id="collegeEmail" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
+                        <div><label class="block text-sm font-medium text-gray-700">Admission No.</label><input type="text" id="admissionNo" required class="mt-1 block w-full px-4 py-2 border rounded-lg"></div>
+                        <button type="submit" id="startQuizBtn" class="w-full py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition mt-6 shadow-lg font-bold" disabled>Start Quiz</button>
+                        
+                        <button type="button" id="adminSignInButton" class="w-full py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition font-bold mt-2">
+                            <i class="fas fa-lock mr-2"></i>Admin Panel
+                        </button>
+                    </form>
+                </div>`;
+
+            const startQuizBtn = document.getElementById('startQuizBtn');
+            const loadingIndicator = document.getElementById('loadingQuestionsIndicator');
+
+            const success = await fetchQuizQuestionsFromSupabase();
+            
+            if (loadingIndicator) loadingIndicator.style.display = 'none';
+
+            if (success) {
+                startQuizBtn.disabled = false;
+                startQuizBtn.textContent = `Start Quiz (${quizQuestions.length} Questions)`;
+            } else {
+                startQuizBtn.textContent = 'Quiz Data Load Failed';
+                startQuizBtn.className = startQuizBtn.className.replace('bg-green-600', 'bg-red-600').replace('hover:bg-green-700', 'hover:bg-red-700');
+                return;
+            }
+
+            document.getElementById('signInForm').addEventListener('submit', function(e) {
+                e.preventDefault();
+                if (!isQuizActive) { showQuizOffModal(); return; }
+
+                studentInfo = {
+                    name: document.getElementById('studentName').value.trim(),
+                    email: document.getElementById('collegeEmail').value.trim(),
+                    admissionNo: document.getElementById('admissionNo').value.trim()
+                };
+
+                // Shuffle questions after fetching, before starting
+                shuffleArray(quizQuestions); 
+
+                requestFullScreen();
+                enableProctoring();
+                setView('quiz');
+            });
+            
+            document.getElementById('adminSignInButton').onclick = () => setView('admin');
+        }
+
+        function renderQuiz() {
+            APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-3xl bg-white rounded-2xl shadow-xl p-8 mt-10 relative">
+                        <div class="h-4 w-full mb-4 border-b border-gray-100"></div>
+                    
+                    <div id="progressBarContainer"><div id="progressBar"></div></div>
+                    <div id="countdownTimer">Time: <span id="countdownValue">${TIME_PER_QUESTION}</span>s</div> 
+                    <div id="quizContent"></div>
+                </div>`;
+            renderQuizQuestion();
+            startTimer();
+        }
+
+        function renderQuizQuestion() {
+            const q = quizQuestions[currentQuestionIndex];
+            const quizContent = document.getElementById('quizContent');
+            
+            // Shuffle options for rendering
+            const optionsToRender = [...q.options];
+            shuffleArray(optionsToRender);
+
+            quizContent.innerHTML = `
+                <div class="mb-6"><h3 class="text-xl font-semibold text-gray-800">${q.question}</h3></div>
+                <div class="space-y-4" id="optionsContainer">
+                    ${optionsToRender.map(opt => `
+                        <label class="flex items-center p-4 border rounded-xl cursor-pointer hover:bg-blue-50 transition">
+                            <input type="radio" name="answer" value="${opt}" class="h-5 w-5 text-blue-600" ${studentResponses[currentQuestionIndex] === opt ? 'checked' : ''}>
+                            <span class="ml-4 text-gray-700 select-none">${opt}</span>
+                        </label>`).join('')}
+                </div>
+                <div class="flex justify-end mt-8">
+                    <button id="nextButton" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-semibold">
+                        ${currentQuestionIndex + 1 === quizQuestions.length ? 'Finish' : 'Next'}
+                    </button>
+                </div>
+                <p id="violationCountDisplay" class="mt-4 text-sm text-right text-gray-500 font-mono"></p>
+            `;
+
+            document.getElementById('nextButton').onclick = (e) => {
+                e.stopPropagation();
+                const selected = document.querySelector('input[name="answer"]:checked');
+                studentResponses[currentQuestionIndex] = selected ? selected.value : null;
+                stopTimer();
+                moveToNextQuestion();
+            };
+            
+            document.getElementById('optionsContainer').onchange = (e) => {
+                if (e.target.name === 'answer') studentResponses[currentQuestionIndex] = e.target.value;
+            };
+        }
+
+        async function calculateAndShowResults(wasTerminated) {
+            LOADING_OVERLAY.style.display = 'flex';
+            let score = 0;
+            quizQuestions.forEach((q, idx) => { if (studentResponses[idx] === q.answer) score++; });
+            const result = saveResultLocally(studentInfo.name, studentInfo.email, studentInfo.admissionNo, score, quizQuestions.length, proctoringViolations);
+            const uploadStatus = await uploadResultToSupabase(result);
+            LOADING_OVERLAY.style.display = 'none';
+            renderFinalScreen(score, wasTerminated, uploadStatus);
+        }
+
+        function renderFinalScreen(score, wasTerminated, uploadStatus) {
+            const statusClass = uploadStatus.success ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
+            const statusIcon = uploadStatus.success ? 'fa-check-circle' : 'fa-exclamation-circle';
+            const statusMsg = uploadStatus.success ? 'Saved to Database' : 'Upload Failed';
+            const errorDetail = uploadStatus.success ? '' : `<p class="text-xs mt-2 text-red-600 font-bold break-words p-2 bg-red-50 rounded border border-red-200">${uploadStatus.message}</p>`;
+
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-lg bg-white rounded-2xl shadow-2xl p-10 text-center">
+                    <div class="inline-flex items-center justify-center w-16 h-16 bg-green-100 rounded-full mb-6">
+                        <i class="fas fa-check-circle text-3xl text-green-600"></i>
+                    </div>
+                    <h2 class="text-3xl font-extrabold text-gray-900 mb-3">${wasTerminated ? 'Exam Terminated' : 'Quiz Submitted'}</h2>
+                    
+                    <div class="bg-gray-50 p-4 rounded-lg mb-6 border border-gray-200">
+                        <p class="text-xl font-bold text-gray-900">${studentInfo.name}</p>
+                        <p class="text-sm text-gray-500 mt-1">Admission No: <span class="font-mono text-gray-700 font-semibold">${studentInfo.admissionNo}</span></p>
+                    </div>
+
+                    <div class="mb-6 p-3 rounded-lg ${statusClass} inline-block w-full">
+                        <div class="flex items-center justify-center">
+                            <i class="fas ${statusIcon} mr-2"></i> <span class="font-bold">${statusMsg}</span>
+                        </div>
+                        ${errorDetail}
+                    </div>
+
+                    <div class="bg-blue-50 p-6 rounded-xl mb-8 text-left">
+                        <div class="flex justify-between mb-2"><span>Score:</span><span class="font-bold">${score} / ${quizQuestions.length}</span></div>
+                        
+                        <div class="border-t border-blue-100 pt-3 mt-3">
+                            <div class="flex justify-between mb-1"><span class="font-bold">Total Violations Recorded:</span><span class="font-bold text-red-600">${proctoringViolations.total}</span></div>
+                            <div class="flex justify-between text-sm text-gray-700"><span>(Window Switch / Extension / Focus Loss):</span><span class="font-bold">${proctoringViolations.windowSwitch} incidents</span></div>
+                            <div class="flex justify-between text-sm text-gray-700"><span>(Copy/Paste / Screenshot Attempt):</span><span class="font-bold">${proctoringViolations.copyPaste} incidents</span></div>
+                        </div>
+                    </div>
+
+                    <button onclick="window.location.reload()" class="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Return to Sign-In</button>
+                </div>
+            `;
+        }
+
+        // --- ADMIN ---
+        function renderAdminLogin() {
+            APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-sm bg-white rounded-xl shadow-xl p-8">
+                    <h2 class="text-2xl font-bold text-center mb-6">Admin Login</h2>
+                    <form id="adminLoginForm" class="space-y-4">
+                        <input type="text" id="adminId" placeholder="Admin ID" class="w-full px-4 py-2 border rounded-lg">
+                        <input type="password" id="adminPassword" placeholder="Password" class="w-full px-4 py-2 border rounded-lg">
+                        <button type="submit" class="w-full py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Login</button>
+                        <button type="button" onclick="setView('signin')" class="w-full py-2 text-gray-600 border rounded-lg hover:bg-gray-50">Cancel</button>
+                    </form>
+                </div>`;
+            
+            document.getElementById('adminLoginForm').onsubmit = (e) => {
+                e.preventDefault();
+                // Simple hardcoded admin credentials
+                if (document.getElementById('adminId').value === 'admin' && document.getElementById('adminPassword').value === 'admin123') setView('leaderboard');
+                else showTempMessage('Invalid Credentials', true);
+            };
+        }
+
+        // --- SUPABASE LEADERBOARD WITH FILTERS ---
+        function renderLeaderboard() {
+            APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
+            APP_CONTAINER.innerHTML = `
+                <div class="w-full max-w-6xl bg-white rounded-2xl shadow-xl p-8 mt-10">
+                    <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+                        <h2 class="text-2xl font-bold text-gray-800">Leaderboard</h2>
+                        <div class="flex flex-wrap gap-2">
+                            <button id="refreshBtn" class="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg shadow text-sm"><i class="fas fa-sync-alt mr-1"></i> Refresh</button>
+                            <button id="quizToggle" class="px-4 py-2 text-white rounded-lg ${isQuizActive ? 'bg-green-600' : 'bg-red-600'} text-sm">Quiz: ${isQuizActive?'ON':'OFF'}</button>
+                            <button id="homeBtn" class="px-4 py-2 border rounded-lg text-blue-600 border-blue-600 hover:bg-blue-50 text-sm">Log Out</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <div><label class="block text-xs font-semibold text-gray-500 mb-1">SEARCH</label><input type="text" id="searchInput" placeholder="Name or Admission No..." class="w-full border rounded-lg px-3 py-2 text-sm"></div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-500 mb-1">SORT BY</label>
+                            <select id="sortSelect" class="w-full border rounded-lg px-3 py-2 text-sm bg-white">
+                                <option value="score_desc">Highest Score</option>
+                                <option value="score_asc">Lowest Score</option>
+                                <option value="violation_desc">Most Violations</option>
+                                <option value="date_desc">Newest First</option>
+                                <option value="date_asc">Oldest First</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-500 mb-1">TIME FILTER</label>
+                            <select id="dateFilter" class="w-full border rounded-lg px-3 py-2 text-sm bg-white"><option value="all">All Time</option><option value="today">Today</option></select>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto rounded-lg border">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-100">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">#</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Student</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Adm No</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Score</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Violations</th>
+                                    <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="leaderboardBody" class="bg-white divide-y divide-gray-200">
+                                <tr><td colspan="6" class="p-10 text-center"><div class="spinner mx-auto"></div><p class="text-gray-500">Loading Data...</p></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>`;
+
+            const fetchAndRender = async () => {
+                const tbody = document.getElementById('leaderboardBody');
+                tbody.innerHTML = `<tr><td colspan="6" class="p-10 text-center"><div class="spinner mx-auto"></div><p class="text-gray-500">Updating...</p></td></tr>`;
+                const searchTerm = document.getElementById('searchInput').value.trim();
+                const sortValue = document.getElementById('sortSelect').value;
+                const dateFilter = document.getElementById('dateFilter').value;
+                let query = client.from(SUPABASE_SUBMISSIONS_TABLE).select('*');
+                if (searchTerm) query = query.or(`student_name.ilike.%${searchTerm}%,admission_no.ilike.%${searchTerm}%`);
+                if (dateFilter === 'today') { const todayStart = new Date(); todayStart.setHours(0,0,0,0); query = query.gte('submission_time', todayStart.toISOString()); }
+                switch(sortValue) {
+                    case 'score_desc': query = query.order('score', { ascending: false }); break;
+                    case 'score_asc': query = query.order('score', { ascending: true }); break;
+                    case 'violation_desc': query = query.order('total_violations', { ascending: false }); break;
+                    case 'date_desc': query = query.order('submission_time', { ascending: false }); break;
+                    case 'date_asc': query = query.order('submission_time', { ascending: true }); break;
+                    default: query = query.order('score', { ascending: false });
+                }
+                if (!sortValue.includes('date')) query = query.order('submission_time', { ascending: false });
+
+                try {
+                    const { data, error } = await query;
+                    if (error) throw error;
+                    if (!data || data.length === 0) { tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-gray-500">No records found matching criteria.</td></tr>`; return; }
+                    tbody.innerHTML = data.map((entry, i) => {
+                        return `
+                        <tr class="${i%2?'bg-gray-50':'bg-white'} hover:bg-gray-100 transition">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">${i+1}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${entry.student_name || 'Unknown'}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${entry.admission_no || '-'}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-bold">${entry.score} / ${entry.total_questions || 20}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm ${entry.total_violations>0?'text-red-600 font-bold':'text-green-600'}">${entry.total_violations || 0}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">${entry.submission_time ? new Date(entry.submission_time).toLocaleString() : 'N/A'}</td>
+                        </tr>`;
+                    }).join('');
+                } catch (err) { console.error(err); tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-red-600">Error: ${err.message}</td></tr>`; }
+            };
+
+            document.getElementById('homeBtn').onclick = () => setView('signin');
+            document.getElementById('quizToggle').onclick = () => { 
+                isQuizActive = !isQuizActive; 
+                localStorage.setItem('isQuizActive', isQuizActive); 
+                renderLeaderboard(); 
+            };
+            document.getElementById('refreshBtn').onclick = fetchAndRender;
+            document.getElementById('sortSelect').addEventListener('change', fetchAndRender);
+            document.getElementById('dateFilter').addEventListener('change', fetchAndRender);
+            let searchTimeout;
+            document.getElementById('searchInput').addEventListener('input', () => { 
+                clearTimeout(searchTimeout); 
+                searchTimeout = setTimeout(fetchAndRender, 500); 
+            });
+            fetchAndRender();
+        }
+
+        // --- INIT ---
+        document.addEventListener('DOMContentLoaded', () => {
+            setView('signin');
+            QUIZ_OFF_CONFIRM_BTN.onclick = () => { QUIZ_OFF_MODAL.style.display = 'none'; };
+            
+            const fsHandler = () => {
+                // If exiting fullscreen while quiz is active and modal is not showing, trigger a violation.
+                if (!document.fullscreenElement && !document.webkitFullscreenElement && currentQuestionIndex < quizQuestions.length && VIOLATION_MODAL.style.display !== 'flex' && proctoringViolations.total < MAX_VIOLATIONS) {
+                    handleProctoringViolation('windowSwitch', 'blur'); 
+                }
+            };
+            ['fullscreenchange','webkitfullscreenchange','mozfullscreenchange'].forEach(e => document.addEventListener(e, fsHandler));
+        });
+    </script>
+</body>
+</html>
