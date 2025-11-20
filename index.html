@@ -693,25 +693,49 @@
             `;
         }
 
-        // --- ADMIN ---
+        // --- ADMIN (UPDATED TO USE SUPABASE RPC) ---
         function renderAdminLogin() {
             APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
             APP_CONTAINER.innerHTML = `
                 <div class="w-full max-w-sm bg-white rounded-xl shadow-xl p-8">
                     <h2 class="text-2xl font-bold text-center mb-6">Admin Login</h2>
                     <form id="adminLoginForm" class="space-y-4">
-                        <input type="text" id="adminId" placeholder="Admin ID" class="w-full px-4 py-2 border rounded-lg">
-                        <input type="password" id="adminPassword" placeholder="Password" class="w-full px-4 py-2 border rounded-lg">
+                        <input type="text" id="adminId" placeholder="Admin ID" required class="w-full px-4 py-2 border rounded-lg">
+                        <input type="password" id="adminPassword" placeholder="Password" required class="w-full px-4 py-2 border rounded-lg">
                         <button type="submit" class="w-full py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Login</button>
                         <button type="button" onclick="setView('signin')" class="w-full py-2 text-gray-600 border rounded-lg hover:bg-gray-50">Cancel</button>
                     </form>
                 </div>`;
             
-            document.getElementById('adminLoginForm').onsubmit = (e) => {
+            document.getElementById('adminLoginForm').onsubmit = async (e) => {
                 e.preventDefault();
-                // Simple hardcoded admin credentials
-                if (document.getElementById('adminId').value === 'admin' && document.getElementById('adminPassword').value === 'admin123') setView('leaderboard');
-                else showTempMessage('Invalid Credentials', true);
+                const adminId = document.getElementById('adminId').value;
+                const adminPassword = document.getElementById('adminPassword').value;
+                
+                // --- SECURE LOGIN VIA SUPABASE RPC ---
+                try {
+                    const { data, error } = await client.rpc('verify_admin_credentials', {
+                        input_id: adminId,
+                        input_password: adminPassword
+                    });
+
+                    if (error || typeof data !== 'boolean') {
+                        console.error('Login RPC Error:', error);
+                        showTempMessage('Database Error during login.', true);
+                        return;
+                    }
+
+                    if (data === true) {
+                        setView('leaderboard');
+                    } else {
+                        showTempMessage('Invalid Credentials', true);
+                    }
+
+                } catch (e) {
+                    console.error('Admin Login Exception:', e);
+                    showTempMessage('An unexpected error occurred during login.', true);
+                }
+                // --- END SECURE LOGIN ---
             };
         }
 
