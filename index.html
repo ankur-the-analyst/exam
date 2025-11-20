@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Proctored Business & Finance Quiz</title>
+    <title>Proctored Business & Finance Quiz - Modified</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -15,7 +14,18 @@
         /* Quiz Timer Styles */
         #progressBarContainer { position: relative; height: 8px; background-color: #e5e7eb; border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
         #progressBar { height: 100%; width: 100%; background-color: #ef4444; transition: width 1s linear; }
-        #countdownTimer { font-size: 1.25rem; font-weight: 700; color: #ef4444; text-align: right; margin-bottom: 10px; }
+        /* Adjusted timer style for total time */
+        #countdownTimer { 
+            font-size: 1.25rem; 
+            font-weight: 700; 
+            color: #ef4444; 
+            text-align: center; /* Center the total timer */
+            margin-bottom: 10px; 
+            padding: 8px;
+            border: 2px solid #ef4444;
+            border-radius: 8px;
+            background-color: #fee2e2;
+        }
         
         /* Loading Overlay */
         #loadingOverlay {
@@ -40,6 +50,45 @@
             animation: spin 1s ease infinite;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Question Panel Button Style - MODIFIED */
+        .q-panel-btn {
+            width: 40px; 
+            height: 40px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-weight: 600; 
+            border-radius: 0.5rem; 
+            transition: all 0.2s;
+            position: relative;
+            border: 2px solid transparent; /* Base border */
+        }
+        /* New Status Colors */
+        .q-panel-btn.unvisited { background-color: #e5e7eb; color: #6b7280; } /* Gray */
+        .q-panel-btn.viewed { background-color: #fcd34d; color: #78350f; } /* Yellow */
+        .q-panel-btn.answered { background-color: #10b981; color: white; } /* Green */
+        .q-panel-btn.current { 
+            background-color: #3b82f6; 
+            color: white; 
+            border-color: #1d4ed8; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .q-panel-btn.current.flagged {
+             border-color: #b91c1c; /* Darker red for current + flagged */
+             box-shadow: 0 4px 6px -1px rgba(185, 28, 28, 0.5);
+        }
+        /* Flag Icon Style */
+        .q-panel-btn .flag-icon {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            color: #b91c1c; /* Dark Red for flag */
+            font-size: 0.8rem;
+            text-shadow: 0 0 3px rgba(255,255,255,0.8);
+        }
+        .q-panel-btn:not(.current):hover { transform: scale(1.05); }
+        .q-panel-btn.flagged:not(.current) { border-color: #b91c1c; } /* Red border for flagged */
     </style>
 </head>
 <body>
@@ -70,28 +119,33 @@
 
     <script>
         // --- SUPABASE CONFIGURATION ---
-        // ⚠️ These keys were provided in the prompt's context and are required for the client to fetch data.
         const SUPABASE_URL = 'https://tdxausibwaagbhnbgkgz.supabase.co'; 
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRkeGF1c2lid2FhZ2JobmJna2d6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjMwNDgyMDYsImV4cCI6MjA3ODYyNDIwNn0.ApeJFTg-pQaV2gigOUTGpKnMY_AFnT1v5DPpYCCmOKY';
         
         const SUPABASE_SUBMISSIONS_TABLE = 'quiz_submissions'; 
-        const SUPABASE_QUESTIONS_TABLE = 'quiz_questions'; // Your new table
+        const SUPABASE_QUESTIONS_TABLE = 'quiz_questions';
         const STATIC_QUIZ_UUID = '5f4b3d2c-1a0e-9f8d-7c6b-5a4e3d2c1b0a';
 
         // Initialize Supabase client
         const { createClient } = supabase;
         const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        // --- QUIZ DATA - NO HARDCODED QUESTIONS ---
+        // --- QUIZ DATA ---
         let quizQuestions = []; 
 
         // --- STATE ---
         let studentInfo = {};
         let currentQuestionIndex = 0;
-        let studentResponses = []; // Will be sized after fetching questions
+        let studentResponses = []; 
+        let questionStatus = []; // New array to track status: 0=unvisited, 1=viewed, 2=answered
+        let questionFlags = []; // New array to track flags: false=not flagged, true=flagged
         let timerInterval;
-        const TIME_PER_QUESTION = 10; 
-        let timeLeft = TIME_PER_QUESTION;
+        
+        // MODIFIED: Total Quiz Time (15 minutes = 900 seconds)
+        const TOTAL_QUIZ_TIME = 15 * 60; 
+        let timeLeft = TOTAL_QUIZ_TIME; 
+        let isTimerRunning = false; 
+
         // Allows Admin to globally toggle the quiz state
         let isQuizActive = localStorage.getItem('isQuizActive') === 'false' ? false : true; 
         
@@ -137,6 +191,12 @@
             }
         }
 
+        function formatTime(seconds) {
+            const min = Math.floor(seconds / 60);
+            const sec = seconds % 60;
+            return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+        }
+
         function setView(viewName) {
             VIOLATION_MODAL.style.display = 'none';
             QUIZ_OFF_MODAL.style.display = 'none'; 
@@ -144,8 +204,11 @@
 
             APP_CONTAINER.innerHTML = '';
 
+            // Stop timer if switching away from the quiz
+            if (viewName !== 'quiz') stopTotalTimer();
+
             if (viewName === 'signin') renderSignIn();
-            else if (viewName === 'proctoringRules') renderProctoringRules(); // New View
+            else if (viewName === 'proctoringRules') renderProctoringRules(); 
             else if (viewName === 'quiz') renderQuiz();
             else if (viewName === 'admin') renderAdminLogin();
             else if (viewName === 'leaderboard') renderLeaderboard(); 
@@ -243,8 +306,10 @@
                     answer: q.answer
                 }));
                 
-                // Re-initialize studentResponses array size based on fetched questions
+                // Re-initialize state arrays
                 studentResponses = Array(quizQuestions.length).fill(null);
+                questionStatus = Array(quizQuestions.length).fill(0); // 0=unvisited
+                questionFlags = Array(quizQuestions.length).fill(false);
 
                 return true;
             } catch (e) {
@@ -285,7 +350,7 @@
                 MODAL_CONFIRM_BTN.textContent = 'Submit Exam Now';
                 MODAL_CONFIRM_BTN.className = "w-full py-3 px-4 rounded-lg text-white font-bold bg-red-700 hover:bg-red-800 transition shadow-lg";
                 
-                stopTimer();
+                stopTotalTimer(); // Changed to stopTotalTimer
                 disableProctoring(); 
                 exitFullScreen();
                 
@@ -445,43 +510,82 @@
             document.removeEventListener('keydown', screenshotKeyHandler); 
         }
 
-        // --- TIMER & LOGIC ---
+        // --- TIMER & NAVIGATION LOGIC (MODIFIED) ---
+
         function updateTimerDisplay() {
             const progressBar = document.getElementById('progressBar');
             const countdownTimer = document.getElementById('countdownValue'); 
-            if (progressBar) progressBar.style.width = ((timeLeft / TIME_PER_QUESTION) * 100) + '%';
-            if (countdownTimer) countdownTimer.textContent = timeLeft;
+
+            if (progressBar) progressBar.style.width = ((timeLeft / TOTAL_QUIZ_TIME) * 100) + '%';
+            if (countdownTimer) countdownTimer.textContent = formatTime(timeLeft);
         }
 
-        function startTimer() {
-            stopTimer();
-            timeLeft = TIME_PER_QUESTION;
+        function startTotalTimer() {
+            if (isTimerRunning) return; 
+
+            isTimerRunning = true;
             updateTimerDisplay();
             timerInterval = setInterval(() => {
                 timeLeft--;
                 updateTimerDisplay();
+
+                // Auto-submit on timeout
                 if (timeLeft <= 0) {
-                    stopTimer();
-                    // Auto-answer null on timeout
-                    studentResponses[currentQuestionIndex] = null; 
-                    moveToNextQuestion();
+                    stopTotalTimer();
+                    disableProctoring();
+                    exitFullScreen();
+                    // Auto-submit on finish (wasTerminated=true for time-out)
+                    calculateAndShowResults(true); 
                 }
             }, 1000);
         }
 
-        function stopTimer() { clearInterval(timerInterval); }
+        function stopTotalTimer() { 
+            clearInterval(timerInterval); 
+            isTimerRunning = false;
+        }
 
-        function moveToNextQuestion() {
-            currentQuestionIndex++;
-            if (currentQuestionIndex < quizQuestions.length) {
+        // New function to jump to a specific question
+        function jumpToQuestion(index) {
+            if (index >= 0 && index < quizQuestions.length) {
+                // Before changing, ensure the current question's status is at least 'viewed' if not answered
+                if (questionStatus[currentQuestionIndex] === 0) {
+                    questionStatus[currentQuestionIndex] = 1; // Mark as viewed
+                }
+                
+                currentQuestionIndex = index;
+                
+                // Mark the newly accessed question as 'viewed' if it was 'unvisited'
+                if (questionStatus[currentQuestionIndex] === 0) {
+                    questionStatus[currentQuestionIndex] = 1; 
+                }
+                
                 renderQuizQuestion();
-                startTimer();
-            } else {
-                stopTimer();
-                disableProctoring();
-                exitFullScreen();
-                calculateAndShowResults(false);
+                renderQuestionPanel(); // Re-render panel to highlight current question
             }
+        }
+        
+        // New function to handle next/previous button clicks
+        function navigateQuestions(direction) {
+            const newIndex = currentQuestionIndex + direction;
+            if (newIndex >= 0 && newIndex < quizQuestions.length) {
+                jumpToQuestion(newIndex);
+            }
+        }
+        
+        function saveCurrentAnswer(value) {
+            studentResponses[currentQuestionIndex] = value;
+            questionStatus[currentQuestionIndex] = 2; // Mark as answered (green)
+            renderQuestionPanel(); // Update panel to show question as answered
+        }
+        
+        // New function to toggle the flag status (MODIFIED: Removed showTempMessage)
+        function toggleFlag() {
+            questionFlags[currentQuestionIndex] = !questionFlags[currentQuestionIndex];
+            renderQuizQuestion(); // Re-render to update the flag button state
+            renderQuestionPanel(); // Re-render to update the flag icon in the panel
+            
+            // Removed: showTempMessage logic
         }
 
         // --- RENDERING VIEWS ---
@@ -542,7 +646,6 @@
             document.getElementById('adminSignInButton').onclick = () => setView('admin');
         }
 
-        // --- NEW: RENDER PROCTORING RULES PAGE ---
         function renderProctoringRules() {
             APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
             APP_CONTAINER.innerHTML = `
@@ -581,36 +684,103 @@
             cancelBtn.onclick = () => setView('signin');
 
             startBtn.onclick = () => {
-                // Shuffle questions, request fullscreen, enable proctoring, and start quiz
                 shuffleArray(quizQuestions); 
                 requestFullScreen();
                 enableProctoring();
+                // Initialize the first question's status as 'viewed' upon starting
+                if (quizQuestions.length > 0) {
+                     questionStatus[0] = 1;
+                }
                 setView('quiz');
             };
         }
-        // --- END: NEW RENDER PROCTORING RULES PAGE ---
 
+        // Modified renderQuiz to accommodate the new structure (REMOVED LEGEND HERE)
         function renderQuiz() {
             APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
             APP_CONTAINER.innerHTML = `
-                <div class="w-full max-w-3xl bg-white rounded-2xl shadow-xl p-8 mt-10 relative">
-                        <div class="h-4 w-full mb-4 border-b border-gray-100"></div>
-                    
-                    <div id="progressBarContainer"><div id="progressBar"></div></div>
-                    <div id="countdownTimer">Time: <span id="countdownValue">${TIME_PER_QUESTION}</span>s</div> 
-                    <div id="quizContent"></div>
+                <div class="w-full max-w-6xl grid grid-cols-1 md:grid-cols-4 gap-4 mt-10">
+                    <div class="md:col-span-3 bg-white rounded-2xl shadow-xl p-8 relative">
+                        <div class="mb-4 flex justify-between items-center">
+                            <h2 class="text-2xl font-bold text-gray-800">Question <span id="questionNumberDisplay">1</span> / ${quizQuestions.length}</h2>
+                            <button id="flagButton" class="px-4 py-2 rounded-lg text-sm font-semibold border transition shadow-sm"></button>
+                        </div>
+                        <div id="progressBarContainer"><div id="progressBar"></div></div>
+                        <div id="quizContent"></div>
+                    </div>
+
+                    <div class="md:col-span-1 bg-white rounded-2xl shadow-xl p-6 sticky top-4 self-start">
+                        <div id="countdownTimer">Time Remaining: <span id="countdownValue">${formatTime(timeLeft)}</span></div>
+                        <h3 class="text-lg font-bold text-gray-800 mb-3 mt-4">Question Status</h3>
+                        <div id="questionPanel" class="grid grid-cols-5 gap-2">
+                            </div>
+                        
+                        <p id="violationCountDisplay" class="text-sm text-center text-gray-500 font-mono pt-4 mt-6"></p>
+                    </div>
                 </div>`;
+                
+            startTotalTimer(); // Start the total quiz timer
             renderQuizQuestion();
-            startTimer();
+            renderQuestionPanel();
+            
+            // Event listener for flag button
+            document.getElementById('flagButton').onclick = toggleFlag;
         }
 
+        // New function to render the Question Navigation Panel
+        function renderQuestionPanel() {
+            const panel = document.getElementById('questionPanel');
+            if (!panel) return;
+            
+            panel.innerHTML = quizQuestions.map((q, index) => {
+                const status = questionStatus[index]; // 0=unvisited, 1=viewed, 2=answered
+                const isFlagged = questionFlags[index];
+                
+                let statusClass = 'unvisited'; 
+                if (status === 1) statusClass = 'viewed'; // Yellow
+                if (status === 2) statusClass = 'answered'; // Green
+                
+                if (index === currentQuestionIndex) statusClass = 'current'; // Blue for current
+
+                return `
+                    <button class="q-panel-btn ${statusClass} ${isFlagged ? 'flagged' : ''}" onclick="jumpToQuestion(${index})">
+                        ${index + 1}
+                        ${isFlagged ? '<i class="fas fa-flag flag-icon"></i>' : ''}
+                    </button>
+                `;
+            }).join('');
+        }
+
+
+        // Modified renderQuizQuestion for state persistence, new navigation, and flag button update
         function renderQuizQuestion() {
             const q = quizQuestions[currentQuestionIndex];
             const quizContent = document.getElementById('quizContent');
+            const qNumDisplay = document.getElementById('questionNumberDisplay');
+            const flagButton = document.getElementById('flagButton');
+
             
-            // Shuffle options for rendering
+            if(qNumDisplay) qNumDisplay.textContent = currentQuestionIndex + 1;
+
             const optionsToRender = [...q.options];
             shuffleArray(optionsToRender);
+            
+            // Determine button visibility
+            const isFirst = currentQuestionIndex === 0;
+            const isLast = currentQuestionIndex === quizQuestions.length - 1;
+            const isFlagged = questionFlags[currentQuestionIndex];
+            
+            // Update Flag button display
+            if (flagButton) {
+                if (isFlagged) {
+                    flagButton.innerHTML = `<i class="fas fa-flag mr-2"></i> Flagged (Click to Unflag)`;
+                    flagButton.className = "px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-red-100 text-red-700 border-red-400 hover:bg-red-200";
+                } else {
+                    flagButton.innerHTML = `<i class="far fa-flag mr-2"></i> Flag for Review`;
+                    flagButton.className = "px-4 py-2 rounded-lg text-sm font-semibold transition shadow-sm bg-gray-100 text-gray-700 border-gray-400 hover:bg-gray-200";
+                }
+            }
+
 
             quizContent.innerHTML = `
                 <div class="mb-6"><h3 class="text-xl font-semibold text-gray-800">${q.question}</h3></div>
@@ -621,25 +791,43 @@
                             <span class="ml-4 text-gray-700 select-none">${opt}</span>
                         </label>`).join('')}
                 </div>
-                <div class="flex justify-end mt-8">
-                    <button id="nextButton" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-semibold">
-                        ${currentQuestionIndex + 1 === quizQuestions.length ? 'Finish' : 'Next'}
+                
+                <div class="flex justify-between mt-8">
+                    <button id="prevButton" class="px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 shadow-md font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}" ${isFirst ? 'disabled' : ''}>
+                        <i class="fas fa-arrow-left mr-2"></i> Previous
+                    </button>
+                    
+                    <button id="nextButton" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md font-semibold ${isLast ? 'hidden' : ''}">
+                        Next <i class="fas fa-arrow-right ml-2"></i>
+                    </button>
+
+                    <button id="submitButton" class="px-6 py-3 bg-yellow-600 text-white rounded-lg hover:bg-green-700 shadow-md font-semibold ${isLast ? '' : 'hidden'}">
+                        <i class="fas fa-paper-plane mr-2"></i> Submit Final Exam
                     </button>
                 </div>
-                <p id="violationCountDisplay" class="mt-4 text-sm text-right text-gray-500 font-mono"></p>
+                
+                <p id="violationCountDisplay" class="mt-4 text-sm text-right text-gray-500 font-mono">⚠️ Violations: ${proctoringViolations.total} / ${MAX_VIOLATIONS}</p>
             `;
 
-            document.getElementById('nextButton').onclick = (e) => {
-                e.stopPropagation();
-                const selected = document.querySelector('input[name="answer"]:checked');
-                studentResponses[currentQuestionIndex] = selected ? selected.value : null;
-                stopTimer();
-                moveToNextQuestion();
-            };
-            
             document.getElementById('optionsContainer').onchange = (e) => {
-                if (e.target.name === 'answer') studentResponses[currentQuestionIndex] = e.target.value;
+                if (e.target.name === 'answer') saveCurrentAnswer(e.target.value);
             };
+
+            document.getElementById('prevButton').onclick = () => navigateQuestions(-1);
+            document.getElementById('nextButton').onclick = () => navigateQuestions(1);
+
+            if (document.getElementById('submitButton')) {
+                 document.getElementById('submitButton').onclick = () => {
+                    if (confirm("Are you sure you want to submit the exam? This cannot be undone.")) {
+                        stopTotalTimer();
+                        disableProctoring();
+                        exitFullScreen();
+                        calculateAndShowResults(false);
+                    }
+                };
+            }
+            
+            renderQuestionPanel(); // Ensure panel reflects changes after navigating
         }
 
         async function calculateAndShowResults(wasTerminated) {
@@ -651,6 +839,8 @@
             LOADING_OVERLAY.style.display = 'none';
             renderFinalScreen(score, wasTerminated, uploadStatus);
         }
+
+        // ... (renderFinalScreen, renderAdminLogin, renderLeaderboard functions remain the same as previous) ...
 
         function renderFinalScreen(score, wasTerminated, uploadStatus) {
             const statusClass = uploadStatus.success ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700';
@@ -664,7 +854,7 @@
                     <div class="inline-flex items-center justify-center w-16 h-16 bg-green-100 rounded-full mb-6">
                         <i class="fas fa-check-circle text-3xl text-green-600"></i>
                     </div>
-                    <h2 class="text-3xl font-extrabold text-gray-900 mb-3">${wasTerminated ? 'Exam Terminated' : 'Quiz Submitted'}</h2>
+                    <h2 class="text-3xl font-extrabold text-gray-900 mb-3">${wasTerminated ? 'Exam Terminated/Time Expired' : 'Quiz Submitted'}</h2>
                     
                     <div class="bg-gray-50 p-4 rounded-lg mb-6 border border-gray-200">
                         <p class="text-xl font-bold text-gray-900">${studentInfo.name}</p>
@@ -693,7 +883,6 @@
             `;
         }
 
-        // --- ADMIN (UPDATED TO USE SUPABASE RPC) ---
         function renderAdminLogin() {
             APP_CONTAINER.className = "flex items-center justify-center min-h-screen p-4 bg-gray-50";
             APP_CONTAINER.innerHTML = `
@@ -739,7 +928,6 @@
             };
         }
 
-        // --- SUPABASE LEADERBOARD WITH FILTERS ---
         function renderLeaderboard() {
             APP_CONTAINER.className = "flex items-start justify-center min-h-screen p-4 bg-gray-100";
             APP_CONTAINER.innerHTML = `
