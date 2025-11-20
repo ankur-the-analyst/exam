@@ -145,6 +145,7 @@
         const TOTAL_QUIZ_TIME = 15 * 60; 
         let timeLeft = TOTAL_QUIZ_TIME; 
         let isTimerRunning = false; 
+        let isQuizSubmitted = false; // <<< ADDED: Flag to prevent violations after submission
 
         // Allows Admin to globally toggle the quiz state
         let isQuizActive = localStorage.getItem('isQuizActive') === 'false' ? false : true; 
@@ -392,7 +393,11 @@
         }
 
         function handleProctoringViolation(type, reason) {
+            // <<< MODIFIED: Prevent all violations if quiz has been submitted
+            if (isQuizSubmitted) return; 
+            // Prevent violation counting if the state is unstable (e.g. timeout or termination processing)
             if (currentQuestionIndex >= quizQuestions.length) return; 
+            // >>> END MODIFIED
             
             if (proctoringViolations.total >= MAX_VIOLATIONS) return; 
             
@@ -425,8 +430,8 @@
         }
         
         function detectSpecificExtensionFootprints() {
-            if (currentQuestionIndex >= quizQuestions.length || violationCooldown) return;
-
+            if (currentQuestionIndex >= quizQuestions.length || violationCooldown || isQuizSubmitted) return; // Added isQuizSubmitted
+            
             // Check 1: Known injected global properties from common extensions
             if (window.Stranalytics || window.adblocker || window.betterTranslate || window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
                 handleProctoringViolation('windowSwitch', 'extension'); 
@@ -450,7 +455,7 @@
         };
 
         const touchStartHandler = (e) => {
-            if (currentQuestionIndex >= quizQuestions.length) return; 
+            if (currentQuestionIndex >= quizQuestions.length || isQuizSubmitted) return; // Added isQuizSubmitted
 
             if(e.touches && e.touches.length > 0) {
                 const touchX = e.touches[0].clientX;
@@ -531,6 +536,7 @@
 
                 // Auto-submit on timeout
                 if (timeLeft <= 0) {
+                    isQuizSubmitted = true; // Set submitted flag for timeout auto-submit
                     stopTotalTimer();
                     disableProctoring();
                     exitFullScreen();
@@ -801,7 +807,7 @@
                         Next <i class="fas fa-arrow-right ml-2"></i>
                     </button>
 
-                    <button id="submitButton" class="px-6 py-3 bg-yellow-600 text-white rounded-lg hover:bg-green-700 shadow-md font-semibold ${isLast ? '' : 'hidden'}">
+                    <button id="submitButton" class="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 shadow-md font-semibold ${isLast ? '' : 'hidden'}">
                         <i class="fas fa-paper-plane mr-2"></i> Submit Final Exam
                     </button>
                 </div>
@@ -818,12 +824,13 @@
 
             if (document.getElementById('submitButton')) {
                  document.getElementById('submitButton').onclick = () => {
-                    if (confirm("Are you sure you want to submit the exam? This cannot be undone.")) {
-                        stopTotalTimer();
-                        disableProctoring();
-                        exitFullScreen();
-                        calculateAndShowResults(false);
-                    }
+                    // <<< MODIFIED: Set flag before disabling
+                    isQuizSubmitted = true; 
+                    // Confirmation pop-up removed to prevent proctoring violation.
+                    stopTotalTimer();
+                    disableProctoring();
+                    exitFullScreen();
+                    calculateAndShowResults(false);
                 };
             }
             
@@ -1036,6 +1043,9 @@
             QUIZ_OFF_CONFIRM_BTN.onclick = () => { QUIZ_OFF_MODAL.style.display = 'none'; };
             
             const fsHandler = () => {
+                // <<< MODIFIED: Check if already submitted
+                if (isQuizSubmitted) return; 
+                
                 // If exiting fullscreen while quiz is active and modal is not showing, trigger a violation.
                 if (!document.fullscreenElement && !document.webkitFullscreenElement && currentQuestionIndex < quizQuestions.length && VIOLATION_MODAL.style.display !== 'flex' && proctoringViolations.total < MAX_VIOLATIONS) {
                     handleProctoringViolation('windowSwitch', 'blur'); 
